@@ -1,15 +1,27 @@
+import sys
+import os
 import requests
 import xml.etree.ElementTree as ET
 from git import Repo
+from db import DB
 
 #TODO - make build-team-manifest clone location
 #       configurable
 gitrepo = Repo('build-team-manifests')
 remotes = {
+    'blevesearch': 'https://api.github.com/repos/blevesearch/',
     'couchbase': 'https://api.github.com/repos/couchbase/',
     'couchbase-priv': 'https://api.github.com/repos/couchbase/',
-    'couchbase-deps': 'https://api.github.com/repos/couchbasedeps/',
+    'couchbasedeps': 'https://api.github.com/repos/couchbasedeps/',
+    'couchbaselabs': 'https://api.github.com/repos/couchbaselabs/',
     }
+
+BLDHISTORY_BUCKET = 'couchbase://localhost:8091/build-history'
+bldDB = DB(BLDHISTORY_BUCKET)
+
+TOKEN = ''
+with open(os.path.join(os.path.expanduser('~'), '.githubtoken')) as F:
+    TOKEN = F.read().strip()
 
 def getJS(url, params = None):
     res = None
@@ -21,11 +33,11 @@ def getJS(url, params = None):
 
     return res
 
-def commits(sha):
+def commits(man_sha):
     o = gitrepo.remotes.origin
     o.pull()
-    m1 = gitrepo.git.show("%s:%s" % (sha, 'watson.xml'))
-    m2 = gitrepo.git.show("%s:%s" % (sha+'~1', 'watson.xml'))
+    m1 = gitrepo.git.show("%s:%s" % (man_sha, 'watson.xml'))
+    m2 = gitrepo.git.show("%s:%s" % (man_sha+'~1', 'watson.xml'))
     mxml1 = ET.fromstring(m1)
     mxml2 = ET.fromstring(m2)
     p1list = []
@@ -46,8 +58,16 @@ def commits(sha):
     changes = list(set(p1list) - set(p2list))
     for p in changes:
         giturl = remotes[p[2]] + p[0] + '/git/commits/' + p[1]
-        res = requests.get(giturl, headers={'Authorization': 'token XXXXXXXXXXXXXXX'})
-        print res.json()
+        res = requests.get(giturl, headers={'Authorization': 'token {}'.format(TOKEN)})
+        j = res.json()
+        commit = {}
+        commit['repo'] = p[0]
+        commit['sha'] = j['sha']
+        commit['committer'] = j['committer']
+        commit['author'] = j['author']
+        commit['url'] = j['html_url']
+        commit['message'] = j['message']
+        bldDB.insert_commit(commit)
 
 
 def pollOne(bnum):
@@ -71,8 +91,8 @@ def pollOne(bnum):
         build['version'] = j['envMap']['VERSION']
         build['unit'] = j['envMap']['UNIT_TEST']
 
+    bldDB.insert_build_history(build)
     commits(build['manifest_sha'])
-    print build
 
 def pollTop(start_at):
     baseurl = 'http://server.jenkins.couchbase.com/job/watson-build'
@@ -85,10 +105,9 @@ def pollTop(start_at):
 
     for b in range(end_at, start_at, -1):
         pollOne(b)
-        break
 
 def poll(start_at=0):
     pollTop(start_at)
 
 if __name__ == "__main__":
-    poll()
+    poll(600)
