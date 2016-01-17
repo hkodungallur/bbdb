@@ -46,7 +46,7 @@ def commits(sha):
     changes = list(set(p1list) - set(p2list))
     for p in changes:
         giturl = remotes[p[2]] + p[0] + '/git/commits/' + p[1]
-        res = requests.get(giturl, headers={'Authorization': 'token 55713dcf178286af6352512270fe84f881d64b30'})
+        res = requests.get(giturl, headers={'Authorization': 'token XXXXXXXXXXXXXXX'})
         print res.json()
 
 
