@@ -18,13 +18,15 @@ class DB(object):
         self.bucket = bucket
         self.db = Bucket(bucket, lockmode=LOCKMODE_WAIT)
 
+    def doc_exists(self, docId):
+        try:
+            result = self.db.get(docId)
+        except CouchbaseError as e:
+            return False
+
+        return True
+
     def insert_build_history(self, build):
-        #
-        # param: bldHistory
-        # type: dict
-        #
-        # Job history should be inserted prior to this
-        #
         try:
             docId = build['version']+"-"+str(build['build_num'])
             result = self.db.insert(docId, build)
@@ -32,17 +34,52 @@ class DB(object):
         except CouchbaseError as e:
             if e.rc == 12: 
                 logger.warning("Couldn't create build history {0} due to error: {1}".format(docId, e))
+                docId = None
+
+        return docId
+
+    def insert_distro_history(self, distro):
+        try:
+            docId = distro['version']+"-"+str(distro['build_num'])+"-"+distro['distro']+"-"+distro['edition']
+            result = self.db.insert(docId, distro)
+            logger.debug("{0}".format(result))
+        except CouchbaseError as e:
+            if e.rc == 12:
+                logger.warning("Couldn't create distro history {0} due to error: {1}".format(docId, e))
+                docId = None
+
+        return docId
+
+    def insert_unit_history(self, unit):
+        try:
+            docId = unit['version']+"-"+str(unit['build_num'])+"-"+unit['distro']+"-"+unit['edition']+'-tests'
+            result = self.db.insert(docId, unit)
+            logger.debug("{0}".format(result))
+        except CouchbaseError as e:
+            if e.rc == 12:
+                logger.warning("Couldn't create unit history {0} due to error: {1}".format(docId, e))
+                docId = None
 
         return docId
 
     def insert_commit(self, commit):
+        docId = commit['repo']+"-"+str(commit['sha'])
+        inb = commit['in_build'][0]
         try:
-            docId = commit['repo']+"-"+str(commit['sha'])
-            result = self.db.insert(docId, commit)
-            logger.debug("{0}".format(result))
+            result = self.db.get(docId)
+            val = result.value
+            if not inb in val['in_build']:
+                val['in_build'].append(inb)
+                result = self.db.upsert(docId, val)
         except CouchbaseError as e:
-            print e.rc
-            if e.rc == 12: 
-                logger.error("Couldn't create commit history {0} due to error: {1}".format(docId, e))
+            if e.rc == 13:
+                try: 
+                    result = self.db.insert(docId, commit)
+                    logger.debug("{0}".format(result))
+                except CouchbaseError as e:
+                    print e.rc
+                    if e.rc == 12: 
+                        logger.error("Couldn't create commit history {0} due to error: {1}".format(docId, e))
+                        docId = None
 
         return docId
