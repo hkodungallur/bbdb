@@ -1,12 +1,16 @@
-#!python
+#!/usr/bin/python
 import sys
 import os
 import time
 import json
 import requests
+import logging
 import xml.etree.ElementTree as ET
 from git import Repo
 from db import DB
+
+logger = logging.getLogger()
+log_file = "bb.log"
 
 #TODO - make build-team-manifest clone location
 #       configurable
@@ -26,12 +30,39 @@ TOKEN = ''
 with open(os.path.join(os.path.expanduser('~'), '.githubtoken')) as F:
     TOKEN = F.read().strip()
 
+
+def enable_logging(log_level):
+    try:
+        if os.path.isfile(log_file):
+            os.remove(log_file)
+    except OSError, e:
+        print ("ERROR: {0} - {1}".format(e.filename, e.strerror))
+
+    if log_level.upper() == "DEBUG":
+        level = logging.DEBUG
+    elif log_level.upper() == "INFO":
+        level = logging.INFO
+    elif log_level.upper() == "WARNING":
+        level = logging.WARNING
+    else:
+        level = logging.ERROR
+
+    logger.setLevel(level)
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(funcName)20s()/%(lineno)d - %(message)s')
+
+    # Log to file
+    fh = logging.FileHandler(log_file)
+    fh.setLevel(level)
+    fh.setFormatter(formatter)
+    logger.addHandler(fh)
+
+
 def getJS(url, params = None):
     res = None
     try:
         res = requests.get("%s/%s" % (url, "api/json"), params = params, timeout=3)
     except:
-        print "[Error] url unreachable: %s" % url
+        logger.error("url unreachable: %s" % url)
         pass
 
     return res
@@ -102,31 +133,18 @@ def commits(in_build, man_sha):
             ret = bldDB.insert_commit(commit)
             repo_added.append(ret)
     for k in deleted:
-        giturl = remotes[p2list[k][1]] + k + '/commits/' + p2list[k][0]
-        res = requests.get(giturl, headers={'Authorization': 'token {}'.format(TOKEN)})
-        j = res.json()
-        commit = {}
-        commit['in_build'] = in_build
-        commit['repo'] = k
-        commit['sha'] = c['sha']
-        commit['committer'] = c['committer']
-        commit['author'] = c['author']
-        commit['url'] = c['html_url']
-        commit['message'] = c['message']
-        ret = bldDB.insert_commit(commit)
-        repo_deleted.append(ret)
+        repo_deleted.append(k)
     return repo_changes, repo_added, repo_deleted
 
 
 def pollABuild(bnum):
-    print 'pollABuild: ',
-    print bnum
+    logger.debug('pollABuild: {}'.format(bnum))
     bldurl = 'http://server.jenkins.couchbase.com/job/watson-build/{}'
     envurl = 'http://server.jenkins.couchbase.com/job/watson-build/{}/injectedEnvVars'
     url = bldurl.format(bnum)
     res = getJS(url, {"depth" : 0})
     if not res:
-        print 'no info from jenkins for {}'.format(bnum)
+        logger.warning('no info from jenkins for {}'.format(bnum))
         return
     j = res.json()
     build = {}
@@ -146,18 +164,18 @@ def pollABuild(bnum):
 
     in_build = build['version'] + '-' + build['build_num']
     changes, adds, deletes = commits(in_build, build['manifest_sha'])
-    build['commits'] = changes + adds + deletes
+    build['commits'] = changes + adds
+    build['repo_deleted'] = deletes
     return bldDB.insert_build_history(build)
 
 def pollADistro(baseurl, bnum):
-    print 'pollADistro : ',
-    print bnum
+    logger.debug('pollADistro : {}'.format(bnum))
     bldurl = '{}/{}'
     envurl = '{}/{}/injectedEnvVars'
     url = bldurl.format(baseurl, bnum)
     res = getJS(url, {"depth" : 0})
     if not res:
-        print 'no info from jenkins for {}'.format(bnum)
+        logger.warning('no info from jenkins for {}'.format(bnum))
         return
     j = res.json()
     dbuild = {}
@@ -202,7 +220,7 @@ def pollADistro(baseurl, bnum):
 def pollUnit(url):
     res = getJS(url, {"depth" : 0})
     if not res:
-        print 'no info from jenkins for {}'.format(url)
+        logger.warning('no info from jenkins for {}'.format(url))
         return
     j = res.json()
     units = []
@@ -226,7 +244,7 @@ def pollTopBuild(start_at):
     baseurl = 'http://server.jenkins.couchbase.com/job/watson-build'
     res = getJS(baseurl, {"depth" : 0})
     if not res:
-        print 'Nothing to do'
+        logger.warning('Nothing to do since Jenkins returned empty')
         return
     j = res.json()
     end_at = int(j['lastBuild']['number'])
@@ -234,11 +252,11 @@ def pollTopBuild(start_at):
     for b in range(end_at, start_at, -1):
         ret = pollABuild(b)
         if not ret:
-            print 'pollTopBuild - reached latest build already saved'
+            logger.debug('Reached latest build already saved')
             break
         else:
             if ret.split('-')[1] == start_at:
-                print 'pollTopBuild - reached minm build number'
+                logger.debug('reached start build number. stopping.')
                 break
 
 def pollDistros(start_at):
@@ -248,7 +266,7 @@ def pollDistros(start_at):
     for u in baseurls:
         res = getJS(u, {"depth" : 0})
         if not res:
-            print 'Nothing to do'
+            logger.warning('Nothing to do since Jenkins returned empty')
             return
         j = res.json()
         end_at = int(j['lastBuild']['number'])
@@ -256,18 +274,20 @@ def pollDistros(start_at):
         for b in range(end_at, start_at, -1):
             ret = pollADistro(u, b) 
             if not ret:
-                print 'pollDistros/{} - reached latest build already saved'.format(u.split('/')[-1])
+                logger.debug('{} - reached latest build already saved'.format(u.split('/')[-1]))
                 break
                 pass
             else:
                 if ret.split('-')[1] == start_at:
-                    print 'pollDistros/{} - reached minm build number'.format(u.split('/')[-1])
+                    logger.debug('{} - reached minm build number'.format(u.split('/')[-1]))
                     break
 
 def poll(start_at=0):
     while True:
+        logger.debug('Begin parsing: {}'.format(time.ctime()))
         pollTopBuild(start_at)
         pollDistros(start_at)
+        logger.debug('End parsing: {}'.format(time.ctime()))
         time.sleep(300)
 
 if __name__ == "__main__":
@@ -276,4 +296,5 @@ if __name__ == "__main__":
     #    print 'heya'
     #else:
     #    print 'ugh'
+    enable_logging("DEBUG")
     poll(499)
