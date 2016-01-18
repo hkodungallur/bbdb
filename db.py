@@ -26,10 +26,13 @@ class DB(object):
 
         return True
 
-    def insert_build_history(self, build):
+    def insert_build_history(self, build, update=False):
         try:
             docId = build['version']+"-"+str(build['build_num'])
-            result = self.db.insert(docId, build)
+            if update:
+                result = self.db.upsert(docId, build)
+            else:
+                result = self.db.insert(docId, build)
             logger.debug("{0}".format(result))
         except CouchbaseError as e:
             if e.rc == 12: 
@@ -38,10 +41,13 @@ class DB(object):
 
         return docId
 
-    def insert_distro_history(self, distro):
+    def insert_distro_history(self, distro, update=False):
         try:
             docId = distro['version']+"-"+str(distro['build_num'])+"-"+distro['distro']+"-"+distro['edition']
-            result = self.db.insert(docId, distro)
+            if update:
+                result = self.db.upsert(docId, distro)
+            else:
+                result = self.db.insert(docId, distro)
             logger.debug("{0}".format(result))
         except CouchbaseError as e:
             if e.rc == 12:
@@ -50,10 +56,13 @@ class DB(object):
 
         return docId
 
-    def insert_unit_history(self, unit):
+    def insert_unit_history(self, unit, update=False):
         try:
             docId = unit['version']+"-"+str(unit['build_num'])+"-"+unit['distro']+"-"+unit['edition']+'-tests'
-            result = self.db.insert(docId, unit)
+            if update:
+                result = self.db.upsert(docId, unit)
+            else:
+                result = self.db.insert(docId, unit)
             logger.debug("{0}".format(result))
         except CouchbaseError as e:
             if e.rc == 12:
@@ -83,3 +92,10 @@ class DB(object):
                         docId = None
 
         return docId
+
+    def get_incomplete_builds(self):
+        q = N1QLQuery("select url from `build-history` where result is NULL")
+        urls = []
+        for row in self.db.n1ql_query(q):
+            urls.append(row['url'])
+        return urls

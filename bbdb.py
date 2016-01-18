@@ -168,7 +168,7 @@ def pollABuild(bnum):
     build['repo_deleted'] = deletes
     return bldDB.insert_build_history(build)
 
-def pollADistro(baseurl, bnum):
+def pollADistro(baseurl, bnum, update=False):
     logger.debug('pollADistro : {}'.format(bnum))
     bldurl = '{}/{}'
     envurl = '{}/{}/injectedEnvVars'
@@ -214,8 +214,7 @@ def pollADistro(baseurl, bnum):
              unit['tests'] = tests
              bldDB.insert_unit_history(unit)
 
-    doc_id = dbuild['version'] + '-' + dbuild['build_num']
-    return bldDB.insert_distro_history(dbuild)
+    return bldDB.insert_distro_history(dbuild, update)
 
 def pollUnit(url):
     res = getJS(url, {"depth" : 0})
@@ -263,6 +262,13 @@ def pollDistros(start_at):
     baseurls = ['http://server.jenkins.couchbase.com/job/watson-unix', 
                 'http://server.jenkins.couchbase.com/job/watson-windows',
                ] 
+    incomplete = bldDB.get_incomplete_builds()
+    for u in incomplete:
+        u = u.strip('/')
+        baseurl = u[0:u.rfind('/')]
+        bnum = u[u.rfind('/')+1:]
+        pollADistro(baseurl, bnum, True)
+
     for u in baseurls:
         res = getJS(u, {"depth" : 0})
         if not res:
