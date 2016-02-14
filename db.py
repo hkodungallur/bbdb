@@ -24,7 +24,7 @@ class DB(object):
         except CouchbaseError as e:
             return False
 
-        return True
+        return result
 
     def insert_build_history(self, build, update=False):
         try:
@@ -92,6 +92,22 @@ class DB(object):
                         docId = None
 
         return docId
+
+    def update_distro_result(self, docId, distroId, result):
+        try:
+            ret = self.db.get(docId).value
+            if not distroId in ret[result]:
+                ret[result].append(distroId)
+            if result != 'incomplete':
+                if distroId in ret['incomplete']:
+                    ret['incomplete'].remove(distroId)
+            self.db.upsert(docId, ret)
+            logger.debug("{0}".format(result))
+        except CouchbaseError as e:
+            logger.warning("Couldn't update distro result on {0} due to error: {1}".format(docId, e))
+            docId = None
+
+        return
 
     def get_incomplete_builds(self):
         q = N1QLQuery("select url from `build-history` where result is NULL")

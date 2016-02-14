@@ -1,6 +1,7 @@
 #!/usr/bin/python
 import sys
 import os
+import traceback
 import time
 import json
 import requests
@@ -9,8 +10,18 @@ import xml.etree.ElementTree as ET
 from git import Repo
 from db import DB
 
+_FORCE = False
+_UNTIL = None
+if len(sys.argv) > 2:
+    if sys.argv[1] == "--force":
+        _FORCE = True
+        _UNTIL = sys.argv[2]
+
 logger = logging.getLogger()
 log_file = "bb.log"
+
+update_top = []
+update_distro = []
 
 #TODO - make build-team-manifest clone location
 #       configurable
@@ -21,6 +32,15 @@ remotes = {
     'couchbase-priv': 'https://api.github.com/repos/couchbase/',
     'couchbasedeps': 'https://api.github.com/repos/couchbasedeps/',
     'couchbaselabs': 'https://api.github.com/repos/couchbaselabs/',
+    }
+
+start_build_number = {
+    'master': '1',
+    'watson-dp1': '1300',
+    }
+
+special_previous_builds = {
+    '1400': '1293',
     }
 
 BLDHISTORY_BUCKET = 'couchbase://localhost:8091/build-history'
@@ -67,11 +87,21 @@ def getJS(url, params = None):
 
     return res
 
-def commits(in_build, man_sha):
+def commits(in_build, man_sha, man_file='watson.xml', branch='master'):
+    version, bnum = in_build.split('-')
+    prv_bnum = str(int(bnum)-1)
+    if special_previous_builds.has_key(bnum):
+        prv_bnum = special_previous_builds[bnum]
+    doc = bldDB.doc_exists(version + '-' + prv_bnum)
+    if doc:
+        prv_sha = doc.value['manifest_sha']
+    else:
+        prv_sha = man_sha+'~1'
+
     o = gitrepo.remotes.origin
     o.pull()
-    m1 = gitrepo.git.show("%s:%s" % (man_sha, 'watson.xml'))
-    m2 = gitrepo.git.show("%s:%s" % (man_sha+'~1', 'watson.xml'))
+    m1 = gitrepo.git.show("%s:%s" % (man_sha, man_file))
+    m2 = gitrepo.git.show("%s:%s" % (prv_sha, man_file))
     mxml1 = ET.fromstring(m1)
     mxml2 = ET.fromstring(m2)
     p1list = {}
@@ -115,6 +145,7 @@ def commits(in_build, man_sha):
             commit['author'] = c['commit']['author']
             commit['url'] = c['html_url']
             commit['message'] = c['commit']['message']
+            commit['type'] = 'commit'
             ret = bldDB.insert_commit(commit)
             repo_changes.append(ret)
     for k in added:
@@ -130,6 +161,7 @@ def commits(in_build, man_sha):
             commit['author'] = c['commit']['author']
             commit['url'] = c['html_url']
             commit['message'] = c['commit']['message']
+            commit['type'] = 'commit'
             ret = bldDB.insert_commit(commit)
             repo_added.append(ret)
     for k in deleted:
@@ -159,14 +191,21 @@ def pollABuild(bnum):
             build['job_build_num'] = j['envMap']['BUILD_NUMBER']
             build['version'] = j['envMap']['VERSION']
             build['unit'] = j['envMap']['UNIT_TEST']
+            build['product_branch'] = j['envMap']['PRODUCT_BRANCH']
         except KeyError:
             return "0-0"
 
     in_build = build['version'] + '-' + build['build_num']
-    changes, adds, deletes = commits(in_build, build['manifest_sha'])
-    build['commits'] = changes + adds
-    build['repo_deleted'] = deletes
-    return bldDB.insert_build_history(build)
+    build['commits'] = []
+    if start_build_number[build['product_branch']] != build['build_num']:
+        changes, adds, deletes = commits(in_build, build['manifest_sha'], branch=build['product_branch'] )
+        build['commits'] = changes + adds
+        build['repo_deleted'] = deletes
+    build['passed'] = []
+    build['failed'] = []
+    build['incomplete'] = []
+    build['type'] = 'top_level_build'
+    return bldDB.insert_build_history(build, _FORCE)
 
 def pollADistro(baseurl, bnum, update=False):
     logger.debug('pollADistro : {}'.format(bnum))
@@ -183,6 +222,7 @@ def pollADistro(baseurl, bnum, update=False):
     dbuild['duration'] = j['duration']
     dbuild['result'] = j['result']
     dbuild['slave'] = j['builtOn']
+    dbuild['type'] = 'distro_level_build'
     url = envurl.format(baseurl, bnum)
     res = getJS(url, {"depth" : 0})
     if res:
@@ -212,9 +252,23 @@ def pollADistro(baseurl, bnum, update=False):
              unit['edition'] = dbuild['edition']
              unit['distro'] = dbuild['distro']
              unit['tests'] = tests
+             unit['type'] = 'test_run'
              bldDB.insert_unit_history(unit)
 
-    return bldDB.insert_distro_history(dbuild, update)
+    if dbuild['build_num'] in update_distro:
+        docid = bldDB.insert_distro_history(dbuild, True)
+    else:
+        docid = bldDB.insert_distro_history(dbuild, update)
+    buildid = dbuild['version'] + '-' + dbuild['build_num']
+    current_result = 'incomplete'
+    if dbuild['result']:
+        if dbuild['result'] == "SUCCESS":
+            current_result = 'passed'
+        else:
+            current_result = 'failed'
+    if docid:
+        bldDB.update_distro_result(buildid, docid, current_result)
+    return docid
 
 def pollUnit(url):
     res = getJS(url, {"depth" : 0})
@@ -249,6 +303,10 @@ def pollTopBuild(start_at):
     end_at = int(j['lastBuild']['number'])
 
     for b in range(end_at, start_at, -1):
+        if _FORCE and _UNTIL:
+            if str(b) == _UNTIL:
+                break
+
         ret = pollABuild(b)
         if not ret:
             logger.debug('Reached latest build already saved')
@@ -267,6 +325,7 @@ def pollDistros(start_at):
         u = u.strip('/')
         baseurl = u[0:u.rfind('/')]
         bnum = u[u.rfind('/')+1:]
+        logger.debug('{} - polling incomplete build'.format(baseurl))
         pollADistro(baseurl, bnum, True)
 
     for u in baseurls:
@@ -291,9 +350,13 @@ def pollDistros(start_at):
 def poll(start_at=0):
     while True:
         logger.debug('Begin parsing: {}'.format(time.ctime()))
-        pollTopBuild(start_at)
-        pollDistros(start_at)
-        logger.debug('End parsing: {}'.format(time.ctime()))
+        try:
+            pollTopBuild(start_at)
+            pollDistros(start_at)
+            logger.debug('End parsing: {}'.format(time.ctime()))
+        except Exception, e:
+            logger.error(e)
+            traceback.print_exc(file=sys.stderr)
         time.sleep(300)
 
 if __name__ == "__main__":
