@@ -56,9 +56,13 @@ class DB(object):
 
         return docId
 
-    def insert_unit_history(self, unit, update=False):
+    def insert_test_history(self, unit, test_type='unit', update=False):
         try:
-            docId = unit['version']+"-"+str(unit['build_num'])+"-"+unit['distro']+"-"+unit['edition']+'-tests'
+            if test_type == 'unit':
+                docId = unit['version']+"-"+str(unit['build_num'])+"-"+unit['distro']+"-"+unit['edition']+'-tests'
+            elif test_type == 'build_sanity':
+                docId = unit['version']+"-"+str(unit['build_num'])+"-"+unit['distro']+"-"+unit['edition']+'-sanity-tests'
+
             if update:
                 result = self.db.upsert(docId, unit)
             else:
@@ -66,7 +70,7 @@ class DB(object):
             logger.debug("{0}".format(result))
         except CouchbaseError as e:
             if e.rc == 12:
-                logger.warning("Couldn't create unit history {0} due to error: {1}".format(docId, e))
+                logger.warning("Couldn't create test history {0} due to error: {1}".format(docId, e))
                 docId = None
 
         return docId
@@ -114,4 +118,21 @@ class DB(object):
         urls = []
         for row in self.db.n1ql_query(q):
             urls.append(row['url'])
+        return urls
+
+    def get_incomplete_sanity_runs(self):
+        q = N1QLQuery("select sanity_url from `build-history` where type = 'top_level_build' and sanity_result = 'INCOMPLETE'")
+        urls = []
+        for row in self.db.n1ql_query(q):
+            urls.append(row['sanity_url'])
+        return urls
+
+    def get_incomplete_unit_runs(self):
+        q = N1QLQuery("select unit_urls from `build-history` where type = 'top_level_build' and unit_result = 'INCOMPLETE'")
+        urls = []
+        for row in self.db.n1ql_query(q):
+            ulist = row['unit_urls']
+            for u in ulist:
+                if u['result'] == 'INCOMPLETE':
+                    urls.append(u['url'])
         return urls
