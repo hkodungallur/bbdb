@@ -11,6 +11,8 @@ import logging
 import xml.etree.ElementTree as ET
 from git import Repo
 from db import DB
+from jira import JIRA
+from jira.exceptions import JIRAError
 from logging.handlers import TimedRotatingFileHandler
 
 # various mapping variables because
@@ -35,25 +37,27 @@ start_build_number = {
     }
 special_previous_builds = {
 }
-manifest_map = {
-    'couchbase-server/watson/4.5.0.xml': 'watson.xml',
-    'branch-master.xml': 'couchbase-server/master.xml',
-    'couchbase-server/sherlock/4.1.1.xml': 'sherlock.xml',
+btm_manifest_map = {
+    'couchbase-server/watson/4.5.0.xml': ('watson-4.5.0', 'watson.xml'),
+    'branch-master.xml': ('master', 'couchbase-server/master.xml'),
+    'couchbase-server/sherlock/4.1.1.xml': ('sherlock-4.1.1', 'sherlock.xml'),
+    'couchbase-server/watson/4.5.1.xml': ('watson-4.5.1', 'watson.xml'),
 }
 update_top = []
 update_distro = []
 
 
 _GITHUB_TOKEN = ''
-with open(os.path.join(os.path.expanduser('~'), '.githubtoken')) as F:
+with open(os.path.join(os.path.expanduser('~'), '.ssh/githubtoken')) as F:
     _GITHUB_TOKEN = F.read().strip()
 
-_BLDHISTORY_BUCKET = 'couchbase://localhost:8091/build-history'
+_BLDHISTORY_BUCKET = 'couchbase://localhost/build-history'
 
 class BuildPoller():
     def __init__(self, log_file='build_poller.log', log_level='DEBUG', loop=True, releases=[]):
         self.logger = self._init_logger(log_file, log_level)
         self.bldDB = DB(_BLDHISTORY_BUCKET)
+        self.jira = JIRA( { 'server': 'https://issues.couchbase.com/' } )
         self.constants = None
         self.all_releases = None
         self._read_poll_info_from_db()
@@ -326,6 +330,53 @@ class BuildPoller():
             units.append(suite)
         return units
 
+    def _comment_on_ticket(self, commit):
+      """
+      Adds a comment from Build Team onto the Jira ticket regarding a commit.
+      """
+      # Don't comment about master builds.
+      if commit['in_build'][0].startswith("0.0.0"):
+        return
+      for ticket in commit['fixes']:
+        jticket = None
+        try:
+          jticket = self.jira.issue(ticket)
+        except JIRAError as e:
+          if e.status_code == 404:
+            self.logger.info("commit references non-existent ticket {}".format(ticket))
+          else:
+            self.logger.warning("error loading JIRA issue {}: {}".format(ticket, e.text))
+
+        if jticket is not None:
+          self.jira.add_comment(jticket,
+            "Build {} contains {} commit {} with commit message:\n\n----------\n{}\n----------\n\n{}".format(
+              commit['in_build'][0],
+              commit['repo'],
+              commit['sha'],
+              commit['message'],
+              commit['url']))
+
+    def _handle_commit(self, repo, in_build, c):
+      """
+      Constructs a commit object and inserts it into the database.
+      Also updates Jira for any fixed tickets.
+      Returns the new database doc ID.
+      """
+      commit = {}
+      commit['in_build'] = [in_build]
+      commit['repo'] = repo
+      commit['sha'] = c['sha']
+      commit['committer'] = c['commit']['committer']
+      commit['author'] = c['commit']['author']
+      commit['url'] = c['html_url']
+      commit['message'] = c['commit']['message']
+      commit['type'] = 'commit'
+      commit['fixes'] = self.get_fixed_jiras(commit['message'])
+      self.logger.debug("insert commit {}-{} into db".format(repo, c['sha']))
+      self.logger.debug(json.dumps(commit, indent=2))
+      self._comment_on_ticket(commit)
+      return self.bldDB.insert_commit(commit)
+
     def _commits(self, in_build, man_sha, man_file, branch='master'):
         self.logger.debug('_commits: in_build {}, man_sha {}, man_file {}'.format(in_build, man_sha, man_file))
         version, bnum = in_build.split('-')
@@ -340,10 +391,14 @@ class BuildPoller():
         if not prv_sha:
             prv_sha = man_sha+'~1'
 
-        _GITREPO.git.checkout(branch)
+        manifest_mapped_branch = branch
         manifest_mapped_file = man_file
-        if manifest_map.has_key(man_file):
-            manifest_mapped_file = manifest_map[man_file]
+        if btm_manifest_map.has_key(man_file):
+            manifest_mapped_branch = btm_manifest_map[man_file][0]
+            manifest_mapped_file = btm_manifest_map[man_file][1]
+
+        _GITREPO.git.checkout(manifest_mapped_branch)
+
         o = _GITREPO.remotes.origin
         o.pull()
         m1 = _GITREPO.git.show("%s:%s" % (man_sha, manifest_mapped_file))
@@ -382,37 +437,15 @@ class BuildPoller():
             j = res.json()
             cmts = j['commits']
             for c in cmts:
-                commit = {}
-                commit['in_build'] = [in_build]
-                commit['repo'] = k
-                commit['sha'] = c['sha']
-                commit['committer'] = c['commit']['committer']
-                commit['author'] = c['commit']['author']
-                commit['url'] = c['html_url']
-                commit['message'] = c['commit']['message']
-                commit['type'] = 'commit'
-                commit['fixes'] = self.get_fixed_jiras(commit['message'])
-                self.logger.debug("insert commit {}-{} into db".format(k, c['sha']))
-                ret = self.bldDB.insert_commit(commit)
-                repo_changes.append(ret)
+              repo_changes.append(self._handle_commit(k, in_build, c))
+
         for k in added:
             giturl = _REMOTES[p1list[k][1]] + k + '/commits?sha=' + p1list[k][0]
             res = requests.get(giturl, headers={'Authorization': 'token {}'.format(_GITHUB_TOKEN)})
             j = res.json()
             for c in j:
-                commit = {}
-                commit['in_build'] = [in_build]
-                commit['repo'] = k
-                commit['sha'] = c['sha']
-                commit['committer'] = c['commit']['committer']
-                commit['author'] = c['commit']['author']
-                commit['url'] = c['html_url']
-                commit['message'] = c['commit']['message']
-                commit['type'] = 'commit'
-                commit['fixes'] = self.get_fixed_jiras(commit['message'])
-                self.logger.debug("insert commit {}-{} into db".format(k, c['sha']))
-                ret = self.bldDB.insert_commit(commit)
-                repo_added.append(ret)
+                repo_added.append(self._handle_commit(k, in_build, c))
+
         for k in deleted:
             self.logger.debug("repo {} was removed in this commit".format(k))
             repo_deleted.append(k)
@@ -759,13 +792,17 @@ class BuildPoller():
         self.logger.debug('_get_manifest_sha: polling github for SHA: man_file {} and version {}'.format(man_file, version))
 
         mf = man_file
-        if manifest_map.has_key(man_file):
-            mf = manifest_map[man_file]
+        mb = 'master'
+        if btm_manifest_map.has_key(man_file):
+            mb = btm_manifest_map[man_file][0]
+            mf = btm_manifest_map[man_file][1]
 
         btime = datetime.datetime.fromtimestamp(build_time/1000)
         until = btime.isoformat()
 
-        giturl = 'https://api.github.com/repos/couchbase/build-team-manifests' + '/commits?until={}&&path={}'.format(until, mf)
+        giturl = 'https://api.github.com/repos/couchbase/build-team-manifests' + '/commits?until={}&&path={}&&sha={}'.format(until, mf, mb)
+        self.logger.debug('_get_manifest_sha: polling url: {}'.format(giturl))
+
         res = requests.get(giturl, headers={'Authorization': 'token {}'.format(_GITHUB_TOKEN)})
         j = res.json()
         for c in j:
