@@ -27,6 +27,7 @@ class DB(object):
         try:
             result = self.blddb.get(docid)
         except CouchbaseError as e:
+            print e
             return {}
 
         return result.value
@@ -53,7 +54,9 @@ class DB(object):
     def get_vm_doc(self, ip):
         try:
             result = self.vmdb.get(ip)
+            print result
         except CouchbaseError as e:
+            print e
             return False
 
         return result
@@ -69,13 +72,13 @@ class DB(object):
 
         return docId
 
-    def update_vm_state(self, ip, state, who):
+    def update_vm_state(self, ip, state, who, num_hours=3):
         try:
             doc = self.get_vm_doc(ip).value
             doc['state'] = state
             doc['who'] = who
             if state == 'reserved':
-                doc['expires'] = int(time.time() + 3*60*60)
+                doc['expires'] = int(time.time() + num_hours*60*60)
             elif state == 'available':
                 doc['expires'] = 0
             result = self.vmdb.upsert(ip, doc)
@@ -86,7 +89,7 @@ class DB(object):
 
         return doc
 
-    def provision(self, plat, count, purpose, who):
+    def provision(self, plat, count, purpose, who, hours=3):
         curtime = int(time.time())
         getmore = '10'
         if int(count) > 10:
@@ -100,7 +103,7 @@ class DB(object):
         shuffle(vms)
         ret_vms = vms[:int(count)]
         for ip in ret_vms:
-            self.update_vm_state(ip, 'reserved', who)
+            self.update_vm_state(ip, 'reserved', who, hours)
         return ret_vms
 
     def release(self, vms):
@@ -191,6 +194,8 @@ class DB(object):
                     if cdoc:
                         if cdoc.has_key('fixes'):
                             tix = tix + cdoc['fixes']
+        tix = list(set(tix))
+        tix.sort()
         return tix
                     
 

@@ -14,7 +14,9 @@ def provision_vms():
     num = request.args.get('total', 1)
     why = request.args.get('why', '')
     who = request.args.get('who', 'unknown')
-    vms = db.provision(plat, num, why, who)
+    hrs_str = request.args.get('hours', '3')
+    hrs_int = int(hrs_str)
+    vms = db.provision(plat, num, why, who, hrs_int)
     return jsonify({'vms': vms})
 
 @app.route('/vms/release', methods=['GET'])
@@ -91,4 +93,4 @@ def included_tickets():
     return jsonify({'tickets': ret})
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=8282)
+    app.run(debug=True, host='0.0.0.0', port=8080)
