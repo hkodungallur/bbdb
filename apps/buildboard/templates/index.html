@@ -1,0 +1,60 @@
+{% include 'top.html' %}
+
+    <!-- Begin page content -->
+  {% for project in projects %}
+<div class="container">
+  <h3>{{project.name}}</h3>
+  <h4><i>manifest: <a href="https://github.com/couchbase/manifest/blob/master/{{project.manifest}}">{{project.manifest}}</a></i></h4>
+  <div class="col-md-*">
+  <ul class="list-group">
+  {% for build in project.builds %}
+      <li class="list-group-item row">
+          {% if build.result == "pass" %}
+          <div class="col-md-1"><i class="fa fa-check" style="color: green;" aria-hidden="true"></i></div>
+          {% elif build.result == "building" %}
+          <div class="col-md-1"><i class="fa fa-spinner" title="in progress" aria-hidden="true"></i></div>
+          {% else %}
+          <div class="col-md-1"><i class="fa fa-warning" style="color: red;" aria-hidden="true"></i></div>
+          {% endif %}
+
+          <div class="col-md-1"><a target="_blank" href="http://172.23.120.24/builds/latestbuilds/couchbase-server/{{project.rl}}/{{build.build_num}}">{{build.build_num}}</a></div>
+
+          <div class="col-md-2">{{build.num_commits}} changes</div>
+
+          <div class="col-md-2">Unit tests: 
+            {% if build.unit_result == "COMPLETE" %}
+              <i class="fa fa-check" style="color: green;" aria-hidden="true"></i>
+            {% elif build.unit_result == "INCOMPLETE" %}
+              <i class="fa fa-spinner" title="in progress" aria-hidden="true"></i>
+            {% elif build.unit_result == "skip" %}
+              <i class="fa fa-minus-circle" title="unit test not run" aria-hidden="true"></i>
+            {% else %}
+              <i class="fa fa-warning" style="color: red;" aria-hidden="true"></i>
+            {% endif %}
+          </div>
+
+          <div class="col-md-2">build-sanity: 
+            {% if build.sanity_result == "PASSED" %}
+              <i class="fa fa-check" style="color: green;" aria-hidden="true"></i>
+            {% elif build.sanity_result == "INCOMPLETE" %}
+              <i class="fa fa-spinner" title="in progress" aria-hidden="true"></i>
+            {% elif build.sanity_result == "skip" %}
+              <i class="fa fa-minus-circle" title="build snaity not run" aria-hidden="true"></i>
+            {% else %}
+              <i class="fa fa-warning" style="color: red;" aria-hidden="true"></i>
+            {% endif %}
+          </div>
+
+          <div class="col-md-3">{{build.timestamp}}</div>
+
+          {% if build.qe_sanity %}
+          <div class="col-md-1" title="Triggered QE sanity for this build"><a target="_blank" href="http://greenboard.hq.couchbase.com/#/server/{{build.version}}/{{build.build_num}}">QE<i class="fa fa-arrow-circle-right" aria-hidden="true"></i></a></div>
+          {% endif %}
+      </li>
+  {% endfor %}
+  </ul>
+  </div>
+</div>
+  {% endfor %}
+
+{% include 'bottom.html' %}

@@ -1,0 +1,27 @@
+{% include 'top.html' %}
+
+    <!-- Begin page content -->
+<div class="container">
+<form class="form-inline" action="/getchangelog" method='GET'>
+  <div class="form-group">
+    <label for="relname">Release</label>
+    <SELECT class="form-control" name="rel" id="rel">
+      <option value="4.5.1" SELECTED>4.5.1 (Watson)</option>
+      <option value="4.5.0">4.5.0 (Watson)</option>
+      <option value="4.7.0">4.7.0 (Spock)</option>
+      <option value="4.1.2">4.1.2 (Sherlock)</option>
+    </SELECT> 
+  </div>
+  <div class="form-group">
+    <label for="fromb">From build#</label>
+    <input type="text" class="form-control" name="fromb" id="fromb">
+  </div>
+  <div class="form-group">
+    <label for="tob">To build#</label>
+    <input type="text" class="form-control" name="tob" id="tob">
+  </div>
+  <button type="submit" class="btn btn-default">Get ChangeLog</button>
+</form>
+</div>
+
+{% include 'bottom.html' %}
