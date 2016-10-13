@@ -15,8 +15,6 @@ from jira import JIRA
 from jira.exceptions import JIRAError
 from logging.handlers import TimedRotatingFileHandler
 
-# various mapping variables because
-
 #TODO - make build-team-manifest clone location
 #       configurable
 _GITREPO = Repo('build-team-manifests')
@@ -72,29 +70,34 @@ class BuildPoller():
             self.logger.debug('Begin polling at {}'.format(time.ctime()))
             for rel in self.releases:
                 self.logger.debug('polling release {}'.format(rel))
-                #build
-                top_url = self.constants['build_urls'][rel]['top_level']
-                unix_url = self.constants['build_urls'][rel]['unix']
-                win_url = self.constants['build_urls'][rel]['windows']
-                self._poll_top_level(top_url)
-                self._poll_distros(unix_url)
-                self._poll_distros(win_url)
+                try:
+                    #build
+                    top_url = self.constants['build_urls'][rel]['top_level']
+                    unix_url = self.constants['build_urls'][rel]['unix']
+                    win_url = self.constants['build_urls'][rel]['windows']
+                    self._poll_top_level(top_url)
+                    self._poll_distros(unix_url)
+                    self._poll_distros(win_url)
 
-                #unit-tests
-                unit_urls = self.constants['unit_test_urls']
-                for url in unit_urls:
-                    self._poll_unit_results(url)
+                    #unit-tests
+                    unit_urls = self.constants['unit_test_urls']
+                    for url in unit_urls:
+                        self._poll_unit_results(url)
 
-                #sanity-test
-                sanity_matrix_urls = self.constants['sanity_test_urls']
-                for url in sanity_matrix_urls:
-                    self._poll_build_sanity_results(url)
+                    #sanity-test
+                    sanity_matrix_urls = self.constants['sanity_test_urls']
+                    for url in sanity_matrix_urls:
+                        self._poll_build_sanity_results(url)
+                except Exception, e:
+                    self.logger.error("Exception during polling. But, ignore and repeat:")
+                    self.logger.error(e)
 
             self.logger.debug('End polling at {}'.format(time.ctime()))
 
             if not self.loop:
                 break
             time.sleep(300)
+            self._read_poll_info_from_db()
 
     def query(self):
         pass
@@ -349,11 +352,11 @@ class BuildPoller():
 
         if jticket is not None:
           self.jira.add_comment(jticket,
-            "Build {} contains {} commit {} with commit message:\n\n----------\n{}\n----------\n\n{}".format(
+            "Build {} contains {} commit {} with commit message:\n{}\n{}".format(
               commit['in_build'][0],
               commit['repo'],
               commit['sha'],
-              commit['message'],
+              commit['message'].split('\n', 1)[0],
               commit['url']))
 
     def _handle_commit(self, repo, in_build, c):
